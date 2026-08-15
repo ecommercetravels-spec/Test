@@ -22,70 +22,8 @@
 
   function fmt(n)      { return money.format(Math.round(n)); }
   function fmtShort(n) { return moneyShort.format(n); }
-  function fmtSigned(n) {
-    return (n >= 0 ? '+' : '−') + fmt(Math.abs(n));
-  }
-  function pct(n, dp) {
-    return n.toFixed(dp === undefined ? 1 : dp) + '%';
-  }
-
-  /* -- Derived figures ----------------------------------------------------- */
-
-  var channels = D.channels.map(function (c) {
-    var remaining = c.budget - c.spent;
-    return {
-      name: c.name,
-      budget: c.budget,
-      spent: c.spent,
-      remaining: remaining,
-      used: c.budget > 0 ? (c.spent / c.budget) * 100 : 0,
-      over: remaining < 0
-    };
-  });
-
-  function sum(arr, key) {
-    return arr.reduce(function (t, x) { return t + (x[key] || 0); }, 0);
-  }
-
-  var totalBudget = sum(channels, 'budget');
-  var totalSpent  = sum(channels, 'spent');
-  var totalLeft   = totalBudget - totalSpent;
-  var totalUsed   = totalBudget > 0 ? (totalSpent / totalBudget) * 100 : 0;
-
-  // Cumulative series for the pacing chart.
-  var cumBudget = [], cumSpent = [], runB = 0, runS = 0, spendEnds = -1;
-  D.months.forEach(function (m, i) {
-    runB += m.budget || 0;
-    cumBudget.push(runB);
-    if (m.spent === null || m.spent === undefined) {
-      cumSpent.push(null);
-    } else {
-      runS += m.spent;
-      cumSpent.push(runS);
-      spendEnds = i;
-    }
-  });
-
-  var monthBudgetTotal = runB;
-  var monthSpentTotal  = runS;
-
-  /* Expected spend by now, phased against the monthly budget rather than a
-     flat run rate — a seasonal budget makes "elapsed time × total" wrong. */
-  var elapsed  = Math.max(0, Math.min(meta.periodElapsed, meta.periodTotal));
-  var whole    = Math.floor(elapsed);
-  var fraction = elapsed - whole;
-  var expectedSpend = 0;
-  for (var i = 0; i < whole && i < D.months.length; i++) {
-    expectedSpend += D.months[i].budget || 0;
-  }
-  if (fraction > 0 && whole < D.months.length) {
-    expectedSpend += (D.months[whole].budget || 0) * fraction;
-  }
-  var expectedPct = totalBudget > 0 ? (expectedSpend / totalBudget) * 100 : 0;
-  var variance    = totalSpent - expectedSpend;
-  var variancePct = expectedSpend > 0 ? (variance / expectedSpend) * 100 : 0;
-
-  /* -- Small helpers ------------------------------------------------------- */
+  function fmtSigned(n) { return (n >= 0 ? '+' : '−') + fmt(Math.abs(n)); }
+  function pct(n, dp)  { return n.toFixed(dp === undefined ? 1 : dp) + '%'; }
 
   function el(id) { return document.getElementById(id); }
 
@@ -100,37 +38,132 @@
       .getPropertyValue(name).trim();
   }
 
+  function catColour(key) { return 'var(--cat-' + key + ')'; }
+
+  /* -- Derived figures ----------------------------------------------------- */
+
+  var catName = {};
+  D.categories.forEach(function (c) { catName[c.key] = c.name; });
+
+  var totalSpent  = D.items.reduce(function (t, x) { return t + x.amount; }, 0);
+  var totalBudget = meta.totalBudget;
+  var totalLeft   = totalBudget - totalSpent;
+  var usedPct     = totalBudget > 0 ? (totalSpent / totalBudget) * 100 : 0;
+
+  // Spend by category, in the fixed category order (colour follows the
+  // category, never its rank), then sorted for display by value.
+  var byCat = D.categories.map(function (c) {
+    var items = D.items.filter(function (x) { return x.cat === c.key; });
+    var amount = items.reduce(function (t, x) { return t + x.amount; }, 0);
+    return {
+      key: c.key, name: c.name, amount: amount, count: items.length,
+      share: totalSpent > 0 ? (amount / totalSpent) * 100 : 0
+    };
+  }).filter(function (c) { return c.amount > 0; });
+
+  var byCatSorted = byCat.slice().sort(function (a, b) { return b.amount - a.amount; });
+
+  // Spend by month, split by category.
+  var recorded = D.months.filter(function (m) { return m.recorded; });
+
+  var byMonth = recorded.map(function (m) {
+    var items = D.items.filter(function (x) { return x.month === m.key; });
+    var total = items.reduce(function (t, x) { return t + x.amount; }, 0);
+    var segs = D.categories.map(function (c) {
+      return {
+        key: c.key, name: c.name,
+        amount: items.filter(function (x) { return x.cat === c.key; })
+                     .reduce(function (t, x) { return t + x.amount; }, 0)
+      };
+    }).filter(function (s) { return s.amount > 0; });
+    return {
+      key: m.key, name: m.name, total: total, segs: segs,
+      count: items.length, partial: m.key === D.partialMonth
+    };
+  });
+
+  // Pacing reference: the budget spread across the period. Only a real phasing
+  // if the workbook supplied one — otherwise an even spread, labelled as such.
+  var perMonth = totalBudget / meta.periodMonths;
+
+  function budgetFor(key) {
+    if (meta.budgetIsPhased && meta.monthlyBudget && meta.monthlyBudget[key] != null) {
+      return meta.monthlyBudget[key];
+    }
+    return perMonth;
+  }
+
+  var cumBudget = [], cumSpent = [], runB = 0, runS = 0, spendEnds = -1;
+  var monthTotal = {};
+  byMonth.forEach(function (m) { monthTotal[m.key] = m.total; });
+
+  D.months.forEach(function (m, i) {
+    runB += budgetFor(m.key);
+    cumBudget.push(runB);
+    if (m.recorded) {
+      runS += monthTotal[m.key] || 0;
+      cumSpent.push(runS);
+      spendEnds = i;
+    } else {
+      cumSpent.push(null);
+    }
+  });
+
+  // Expected spend by now, from whatever phasing is in force.
+  var elapsed  = Math.max(0, Math.min(meta.monthsElapsed, meta.periodMonths));
+  var whole    = Math.floor(elapsed);
+  var expected = 0;
+  for (var i = 0; i < whole && i < D.months.length; i++) {
+    expected += budgetFor(D.months[i].key);
+  }
+  if (elapsed - whole > 0 && whole < D.months.length) {
+    expected += budgetFor(D.months[whole].key) * (elapsed - whole);
+  }
+  var expectedPct = totalBudget > 0 ? (expected / totalBudget) * 100 : 0;
+  var variance    = totalSpent - expected;
+  var variancePct = expected > 0 ? (variance / expected) * 100 : 0;
+
+  var queried = D.items.filter(function (x) { return x.note; });
+
   /* -- Header and notices --------------------------------------------------- */
 
-  el('period-label').textContent = meta.periodLabel;
-  el('as-of-label').textContent  = meta.asOfLabel;
+  el('period-label').textContent = meta.budgetPeriodLabel;
+  el('as-of-label').textContent  = meta.asOf;
 
-  if (meta.isPlaceholder) el('placeholder-notice').hidden = false;
+  el('budget-notice-text').innerHTML = meta.budgetIsPhased
+    ? '<strong>Budget phasing.</strong> The pacing figures on this page use the ' +
+      'monthly budget set in <code>data.js</code>.'
+    : '<strong>The budget was given as one total, not a plan.</strong> ' +
+      esc(fmt(totalBudget)) + ' was supplied for the whole period with no split ' +
+      'by month or by category. This page therefore compares spend with an ' +
+      '<em>even</em> spread of that total — ' + esc(fmt(perMonth)) + ' a month — ' +
+      'which is an assumption, not an approved plan. It also means no ' +
+      'category below can be shown against a budget, because there isn\'t one. ' +
+      'If a real phasing exists, put it in <code>monthlyBudget</code> in ' +
+      '<code>data.js</code>.';
 
-  // Sanity check: monthly figures should reconcile to the channel figures.
-  var mismatches = [];
-  if (Math.round(monthBudgetTotal) !== Math.round(totalBudget)) {
-    mismatches.push('budgets (' + fmt(monthBudgetTotal) + ' by month vs ' +
-                    fmt(totalBudget) + ' by channel)');
-  }
-  if (Math.round(monthSpentTotal) !== Math.round(totalSpent)) {
-    mismatches.push('spend (' + fmt(monthSpentTotal) + ' by month vs ' +
-                    fmt(totalSpent) + ' by channel)');
-  }
-  if (mismatches.length) {
-    el('reconcile-notice').hidden = false;
-    el('reconcile-text').innerHTML =
-      '<strong>Figures do not reconcile.</strong> The monthly and channel ' +
-      'breakdowns in <code>data.js</code> disagree on ' +
-      esc(mismatches.join(' and ')) +
-      '. The headline numbers below are taken from the channel figures.';
+  var wrongYear  = queried.filter(function (x) { return /^year recorded/.test(x.note); });
+  var wrongMonth = queried.filter(function (x) { return !/^year recorded/.test(x.note); });
+
+  if (meta.showDateQueries && queried.length) {
+    el('date-notice').hidden = false;
+    el('date-notice-text').innerHTML =
+      '<strong>' + queried.length + ' of ' + D.items.length +
+      ' lines carry a date that disagrees with the sheet they sit on.</strong> ' +
+      wrongYear.length + ' are dated 2025 on a sheet titled 2026; ' +
+      wrongMonth.length + ' fall outside their sheet\'s month altogether, and ' +
+      'read as month/day where the rest of the workbook is day/month. ' +
+      'Amounts are grouped by the sheet the line appears on, which is ' +
+      'unambiguous and reconciles to each sheet\'s own total, so no figure on ' +
+      'this page is affected. The dates themselves are shown exactly as ' +
+      'recorded and summarised at the foot of the page.';
   }
 
   /* -- Headline ------------------------------------------------------------- */
 
-  el('hero-figure').textContent = pct(totalUsed);
+  el('hero-figure').textContent = pct(usedPct);
   el('hero-sub').textContent =
-    fmt(totalSpent) + ' spent of a ' + fmt(totalBudget) + ' budget · ' +
+    fmt(totalSpent) + ' spent of ' + fmt(totalBudget) + ' · ' +
     (totalLeft >= 0 ? fmt(totalLeft) + ' left' : fmt(-totalLeft) + ' overspent');
 
   var ahead = variance > 0;
@@ -140,122 +173,173 @@
 
   el('hero-verdict').innerHTML =
     '<span class="dot" style="background:' + verdictColour + '"></span>' +
-    (Math.abs(variancePct) < 0.05
-      ? 'On plan for this point in the year'
-      : (ahead ? 'Ahead of plan by ' : 'Behind plan by ') +
+    (Math.abs(variancePct) < 0.5
+      ? 'In line with an even spread of the budget'
+      : (ahead ? 'Ahead of an even spread by ' : 'Under an even spread by ') +
         fmt(Math.abs(variance)) + ' (' + pct(Math.abs(variancePct)) + ')');
 
-  var fillPct = Math.max(0, Math.min(totalUsed, 100));
-  var overall = el('overall-fill');
-  overall.style.width = fillPct + '%';
-  if (totalUsed >= 100) overall.classList.add('is-full');
-  if (totalUsed > 100)  overall.classList.add('is-over');
+  var fillPct = Math.max(0, Math.min(usedPct, 100));
+  el('overall-fill').style.width = fillPct + '%';
 
   var gap = el('overall-gap');
-  if (fillPct <= 0 || fillPct >= 100) {
-    gap.hidden = true;
-  } else {
-    gap.style.left = 'calc(' + fillPct + '% - 1px)';
-  }
+  if (fillPct <= 0 || fillPct >= 100) gap.hidden = true;
+  else gap.style.left = 'calc(' + fillPct + '% - 1px)';
 
   var pacePos = Math.max(0, Math.min(expectedPct, 100));
   el('overall-pace').style.left = 'calc(' + pacePos + '% - 1px)';
 
   var paceNote = el('pace-note');
-  paceNote.textContent = 'Planned by now: ' + pct(expectedPct, 0);
+  paceNote.textContent =
+    (meta.budgetIsPhased ? 'Planned by now: ' : 'Even spread by now: ') + pct(expectedPct, 0);
   paceNote.style.left = pacePos + '%';
   paceNote.style.transform =
     pacePos < 12 ? 'none' : (pacePos > 88 ? 'translateX(-100%)' : 'translateX(-50%)');
 
   /* -- KPI row -------------------------------------------------------------- */
 
-  var overspentChannels = channels.filter(function (c) { return c.over; });
-
   var kpis = [
-    {
-      label: 'Total budget',
-      value: fmt(totalBudget),
-      note: meta.periodLabel,
-      key: null
-    },
-    {
-      label: 'Spent to date',
-      value: fmt(totalSpent),
-      note: pct(totalUsed) + ' of budget',
-      key: 'var(--series-spent)'
-    },
-    {
-      label: totalLeft >= 0 ? 'Remaining' : 'Overspent',
+    { label: 'Total budget', value: fmt(totalBudget),
+      note: meta.budgetPeriodLabel, key: null },
+    { label: 'Spent so far', value: fmt(totalSpent),
+      note: pct(usedPct) + ' of budget', key: 'var(--spend)' },
+    { label: totalLeft >= 0 ? 'Left to spend' : 'Overspent',
       value: fmt(Math.abs(totalLeft)),
-      note: pct(Math.abs(100 - totalUsed)) + (totalLeft >= 0 ? ' of budget unspent' : ' over budget'),
-      key: totalLeft >= 0 ? 'var(--track)' : 'var(--status-critical)'
-    },
-    {
-      label: 'Against plan',
-      value: fmtSigned(variance),
-      note: 'vs ' + fmt(expectedSpend) + ' planned by now',
-      key: null
-    }
+      note: pct(Math.abs(100 - usedPct)) + (totalLeft >= 0 ? ' of budget unspent' : ' over budget'),
+      key: totalLeft >= 0 ? 'var(--track)' : 'var(--status-critical)' },
+    { label: 'Recorded so far', value: String(D.items.length) + ' lines',
+      note: 'across ' + recorded.length + ' months, ' + byCat.length + ' categories',
+      key: null }
   ];
 
   el('kpi-row').innerHTML = kpis.map(function (k) {
     return '<div class="kpi">' +
       '<div class="kpi-label">' +
         (k.key ? '<span class="kpi-key" style="background:' + k.key + '"></span>' : '') +
-        esc(k.label) +
-      '</div>' +
+        esc(k.label) + '</div>' +
       '<div class="kpi-value">' + esc(k.value) + '</div>' +
       '<div class="kpi-note">' + esc(k.note) + '</div>' +
     '</div>';
   }).join('');
 
-  /* -- Channel rows --------------------------------------------------------- */
+  /* -- Bar rows ------------------------------------------------------------- */
 
-  var sorted = channels.slice().sort(function (a, b) { return b.budget - a.budget; });
+  var barTip = el('bar-tooltip');
 
-  el('channels-sub').textContent =
-    "Each bar is one channel's own budget. The filled part is spent, the " +
-    'remainder is what is left to commit. ' +
-    (overspentChannels.length
-      ? overspentChannels.length + (overspentChannels.length === 1
-          ? ' channel has gone over: ' : ' channels have gone over: ') +
-        overspentChannels.map(function (c) { return c.name; }).join(', ') + '.'
-      : 'No channel has gone over its budget.');
+  function attachTip(node, html) {
+    node.addEventListener('pointerenter', function () {
+      barTip.innerHTML = html;
+      barTip.classList.add('is-on');
+    });
+    node.addEventListener('pointermove', function (e) {
+      var w = barTip.offsetWidth, h = barTip.offsetHeight;
+      var x = Math.min(e.clientX + 14, window.innerWidth - w - 8);
+      var y = Math.max(8, e.clientY - h - 12);
+      barTip.style.left = x + 'px';
+      barTip.style.top  = y + 'px';
+    });
+    node.addEventListener('pointerleave', function () {
+      barTip.classList.remove('is-on');
+    });
+  }
 
-  el('channel-grid').innerHTML = sorted.map(function (c) {
-    var w   = Math.max(0, Math.min(c.used, 100));
-    var cls = 'meter-fill' +
-              (c.used >= 100 ? ' is-full' : '') +
-              (c.over ? ' is-over' : '');
+  /* Spend by category — one bar per category, drawn as a share of total
+     recorded spend, so a bar's length is the percentage printed beside it. */
+  el('cat-sub').textContent =
+    'All ' + fmt(totalSpent) + ' of recorded spend, grouped into ' +
+    byCat.length + ' categories. Categories were assigned from the line-item ' +
+    'names in the workbook; the workbook itself has no category column, so ' +
+    'if a line is filed wrongly it can be moved in data.js. There is no ' +
+    'budget per category, so these are shares of spend, not budget usage.';
 
-    var flag = c.over
-      ? '<span class="flag"><span class="dot" style="background:var(--status-critical)"></span>' +
-        'Over by ' + esc(fmt(-c.remaining)) + '</span>'
-      : '';
-
-    var tail = c.over
-      ? 'Budget ' + esc(fmt(c.budget))
-      : esc(fmt(c.remaining)) + ' left of ' + esc(fmt(c.budget));
-
-    return '<div class="channel">' +
-      '<div class="channel-top">' +
-        '<span class="channel-name">' + esc(c.name) + flag + '</span>' +
-        '<span class="channel-pct">' + esc(pct(c.used)) + '</span>' +
+  el('cat-bars').innerHTML = byCatSorted.map(function (c) {
+    return '<div>' +
+      '<div class="bar-row-top">' +
+        '<span class="bar-name">' +
+          '<span class="chip"><span class="dot" style="background:' + catColour(c.key) + '"></span>' +
+          esc(c.name) + '</span></span>' +
+        '<span class="bar-values">' + esc(fmt(c.amount)) +
+          '<span class="share">' + esc(pct(c.share)) + ' of spend</span></span>' +
       '</div>' +
-      '<div class="meter meter-sm">' +
-        '<div class="' + cls + '" style="width:' + w + '%"></div>' +
-        (w > 0 && w < 100
-          ? '<div class="meter-gap" style="left:calc(' + w + '% - 1px)"></div>'
-          : '') +
-      '</div>' +
-      '<div class="channel-foot">' +
-        esc(fmt(c.spent)) + ' spent' +
-        '<span class="sep">·</span>' + tail +
+      '<div class="bar-track">' +
+        '<div class="bar-fill" data-cat="' + esc(c.key) + '" style="width:' +
+          c.share + '%;background:' + catColour(c.key) + '"></div>' +
       '</div>' +
     '</div>';
   }).join('');
 
+  byCatSorted.forEach(function (c) {
+    var node = document.querySelector('#cat-bars .bar-fill[data-cat="' + c.key + '"]');
+    if (node) attachTip(node,
+      '<div class="tooltip-title">' + esc(c.name) + '</div>' +
+      '<div class="tooltip-row"><span class="k" style="background:' + catColour(c.key) +
+        '"></span>Spent<span class="n">' + esc(fmt(c.amount)) + '</span></div>' +
+      '<div class="tooltip-row"><span style="width:10px"></span>Share of spend' +
+        '<span class="n">' + esc(pct(c.share)) + '</span></div>' +
+      '<div class="tooltip-row"><span style="width:10px"></span>Lines' +
+        '<span class="n">' + c.count + '</span></div>');
+  });
+
+  /* Spend by month — stacked by category, all rows on one shared scale. */
+  var monthMax = Math.max.apply(null, byMonth.map(function (m) { return m.total; }));
+
+  el('month-legend').innerHTML = byCat.map(function (c) {
+    return '<span class="legend-item"><span class="legend-key" style="background:' +
+      catColour(c.key) + '"></span>' + esc(c.name) + '</span>';
+  }).join('');
+
+  el('month-bars').innerHTML = byMonth.map(function (m, mi) {
+    var acc = 0;
+    var segs = m.segs.map(function (s, si) {
+      var left = acc / monthMax * 100;
+      acc += s.amount;
+      return '<div class="bar-seg" data-m="' + mi + '" data-s="' + si + '" style="left:' +
+        left + '%;width:' + (s.amount / monthMax * 100) + '%;background:' +
+        catColour(s.key) + '"></div>';
+    }).join('');
+
+    return '<div>' +
+      '<div class="bar-row-top">' +
+        '<span class="bar-name">' + esc(m.name) +
+          (m.partial ? ' <span class="flag"><span class="dot"></span>part month</span>' : '') +
+        '</span>' +
+        '<span class="bar-values">' + esc(fmt(m.total)) +
+          '<span class="share">' + m.count + (m.count === 1 ? ' line' : ' lines') +
+        '</span></span>' +
+      '</div>' +
+      '<div class="bar-track">' + segs + '</div>' +
+    '</div>';
+  }).join('');
+
+  byMonth.forEach(function (m, mi) {
+    m.segs.forEach(function (s, si) {
+      var node = document.querySelector(
+        '#month-bars .bar-seg[data-m="' + mi + '"][data-s="' + si + '"]');
+      if (!node) return;
+      attachTip(node,
+        '<div class="tooltip-title">' + esc(m.name) + '</div>' +
+        '<div class="tooltip-row"><span class="k" style="background:' + catColour(s.key) +
+          '"></span>' + esc(s.name) + '<span class="n">' + esc(fmt(s.amount)) + '</span></div>' +
+        '<div class="tooltip-row"><span style="width:10px"></span>Month total' +
+          '<span class="n">' + esc(fmt(m.total)) + '</span></div>' +
+        '<div class="tooltip-row"><span style="width:10px"></span>Share of month' +
+          '<span class="n">' + esc(pct(s.amount / m.total * 100)) + '</span></div>');
+    });
+  });
+
   /* -- Pacing chart --------------------------------------------------------- */
+
+  el('pace-sub').textContent =
+    'Spend so far adds up to ' + fmt(totalSpent) + '. The reference line is ' +
+    (meta.budgetIsPhased
+      ? 'the monthly budget, accumulated.'
+      : 'the budget spread evenly at ' + fmt(perMonth) +
+        ' a month — an assumption, since no monthly plan was supplied.') +
+    ' The spend line stops at the last month entered.';
+
+  el('pace-legend').innerHTML =
+    '<span class="legend-item"><span class="legend-key line" style="background:var(--spend)"></span>Spend to date</span>' +
+    '<span class="legend-item"><span class="legend-key line" style="background:var(--cat-digital)"></span>' +
+    (meta.budgetIsPhased ? 'Budget to date' : 'Even spread of budget') + '</span>';
 
   var NS = 'http://www.w3.org/2000/svg';
 
@@ -273,23 +357,31 @@
     return step * mag;
   }
 
-  var host    = el('pacing-host');
-  var tooltip = el('pacing-tooltip');
-  var geom    = null;          // last-drawn geometry, for the hover layer
+  var host    = el('pace-host');
+  var tooltip = el('pace-tooltip');
+  var geom    = null;
   var hoverIx = -1;
 
   function drawChart() {
     var width = host.clientWidth;
     if (!width) return;
 
-    var height = width < 560 ? 260 : 320;
-    var pad = { top: 16, right: width < 560 ? 20 : 92, bottom: 34, left: width < 560 ? 52 : 68 };
+    var narrow = width < 620;
+    var height = narrow ? 260 : 320;
+    var pad = { top: 16, right: narrow ? 16 : 96, bottom: 34, left: narrow ? 56 : 76 };
     var plotW = Math.max(10, width - pad.left - pad.right);
     var plotH = height - pad.top - pad.bottom;
 
-    var maxVal = Math.max(cumBudget[cumBudget.length - 1] || 0, runS);
-    var step   = niceStep(maxVal || 1, 5);
-    var yMax   = Math.ceil((maxVal || 1) / step) * step;
+    // The top of the plot is the full budget, so the reference line finishes
+    // in the top-right corner rather than leaving a band of dead space above.
+    var yMax = Math.max(cumBudget[cumBudget.length - 1] || 0, runS) || 1;
+    var step = niceStep(yMax, 4);
+
+    var ticks = [];
+    for (var tv = 0; tv < yMax; tv += step) {
+      if (tv / yMax < 0.93) ticks.push(tv);      // skip a tick crowding the top
+    }
+    ticks.push(yMax);
 
     var n = D.months.length;
     var x = function (i) { return pad.left + (n === 1 ? plotW / 2 : (plotW * i) / (n - 1)); };
@@ -299,46 +391,40 @@
     if (old) old.remove();
 
     var svg = svgEl('svg', {
-      viewBox: '0 0 ' + width + ' ' + height,
-      height: height,
-      role: 'img',
-      'aria-label':
-        'Cumulative marketing spend against cumulative budget across ' +
-        n + ' ' + meta.periodUnit + '. Full figures are in the table below.'
+      viewBox: '0 0 ' + width + ' ' + height, height: height, role: 'img',
+      'aria-label': 'Running total of marketing spend against the budget across ' +
+        n + ' months. Every value is also in the tables below.'
     });
 
-    var ink   = css('--text-muted');
-    var grid  = css('--gridline');
-    var base  = css('--baseline');
-    var cSpent  = css('--series-spent');
-    var cBudget = css('--series-budget');
-    var surf    = css('--surface-1');
+    var ink    = css('--text-muted');
+    var grid   = css('--gridline');
+    var base   = css('--baseline');
+    var cSpend = css('--spend');
+    var cBud   = css('--cat-digital');
+    var surf   = css('--surface-1');
 
-    // Gridlines and y-axis ticks — solid hairlines, one step off the surface.
-    for (var v = 0; v <= yMax + 0.5; v += step) {
+    ticks.forEach(function (v) {
       var yy = y(v);
       svg.appendChild(svgEl('line', {
         x1: pad.left, x2: pad.left + plotW, y1: yy, y2: yy,
         stroke: v === 0 ? base : grid, 'stroke-width': 1
       }));
       var t = svgEl('text', {
-        x: pad.left - 10, y: yy + 4,
-        'text-anchor': 'end', fill: ink,
-        'font-size': 11, 'font-variant-numeric': 'tabular-nums'
+        x: pad.left - 10, y: yy + 4, 'text-anchor': 'end',
+        fill: ink, 'font-size': 11, 'font-variant-numeric': 'tabular-nums'
       });
       t.textContent = fmtShort(v);
       svg.appendChild(t);
-    }
+    });
 
-    // X-axis labels — thinned out on narrow screens.
     var everyOther = plotW / n < 34;
     D.months.forEach(function (m, i) {
       if (everyOther && i % 2 !== 0 && i !== n - 1) return;
       var t = svgEl('text', {
-        x: x(i), y: pad.top + plotH + 20,
-        'text-anchor': 'middle', fill: ink, 'font-size': 11
+        x: x(i), y: pad.top + plotH + 20, 'text-anchor': 'middle',
+        fill: ink, 'font-size': 11
       });
-      t.textContent = m.name;
+      t.textContent = m.key;
       svg.appendChild(t);
     });
 
@@ -353,88 +439,70 @@
     }
 
     svg.appendChild(svgEl('path', {
-      d: path(cumBudget), fill: 'none', stroke: cBudget,
+      d: path(cumBudget), fill: 'none', stroke: cBud,
       'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round'
     }));
     svg.appendChild(svgEl('path', {
-      d: path(cumSpent), fill: 'none', stroke: cSpent,
+      d: path(cumSpent), fill: 'none', stroke: cSpend,
       'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round'
     }));
 
-    // End markers — 8px dots with a 2px surface ring so they stay legible
-    // where the two lines cross.
     function endDot(ix, val, colour) {
       if (ix < 0) return;
       svg.appendChild(svgEl('circle', {
-        cx: x(ix), cy: y(val), r: 4,
-        fill: colour, stroke: surf, 'stroke-width': 2
+        cx: x(ix), cy: y(val), r: 4, fill: colour, stroke: surf, 'stroke-width': 2
       }));
     }
-    endDot(n - 1, cumBudget[n - 1], cBudget);
-    endDot(spendEnds, cumSpent[spendEnds], cSpent);
+    endDot(n - 1, cumBudget[n - 1], cBud);
+    endDot(spendEnds, cumSpent[spendEnds], cSpend);
 
-    // Direct labels — endpoints only. Text wears an ink token, never the
-    // series colour; the dot beside it carries identity.
-    if (pad.right > 60) {
-      var bl = svgEl('text', {
-        x: x(n - 1) + 12, y: y(cumBudget[n - 1]) + 4,
-        fill: css('--text-secondary'), 'font-size': 12
-      });
-      bl.textContent = fmtShort(cumBudget[n - 1]);
-      svg.appendChild(bl);
-    }
-    // The spend line ends mid-plot, so its label has no free margin to sit in.
-    // Below ~560px there is not enough room to place it clear of the budget
-    // line — drop it and let the tooltip and the table carry the value.
-    if (spendEnds >= 0 && width >= 560) {
-      var sv = cumSpent[spendEnds];
-      var above = sv >= (cumBudget[spendEnds] || 0);
-      var sl = svgEl('text', {
-        x: x(spendEnds), y: y(sv) + (above ? -14 : 22),
-        'text-anchor': 'middle',
-        fill: css('--text-secondary'), 'font-size': 12
-      });
-      sl.textContent = fmtShort(sv) + ' spent';
-      svg.appendChild(sl);
+    // Endpoint labels only, in ink tokens — the dot beside carries identity.
+    // The budget line finishes on the top gridline, which already carries the
+    // figure — a second label there would just repeat it. Only spend is
+    // labelled, since its endpoint sits away from any axis.
+    if (!narrow) {
+      if (spendEnds >= 0) {
+        var sl = svgEl('text', {
+          x: x(spendEnds), y: y(cumSpent[spendEnds]) + 22, 'text-anchor': 'middle',
+          fill: css('--text-secondary'), 'font-size': 12
+        });
+        sl.textContent = fmtShort(cumSpent[spendEnds]) + ' spent';
+        svg.appendChild(sl);
+      }
     }
 
-    // Hover layer: crosshair plus one generous hit band per month.
     var crosshair = svgEl('line', {
-      y1: pad.top, y2: pad.top + plotH,
-      stroke: base, 'stroke-width': 1, opacity: 0
+      y1: pad.top, y2: pad.top + plotH, stroke: base, 'stroke-width': 1, opacity: 0
     });
     svg.appendChild(crosshair);
 
-    var focusDots = [
-      svgEl('circle', { r: 4, fill: cSpent,  stroke: surf, 'stroke-width': 2, opacity: 0 }),
-      svgEl('circle', { r: 4, fill: cBudget, stroke: surf, 'stroke-width': 2, opacity: 0 })
+    var dots = [
+      svgEl('circle', { r: 4, fill: cSpend, stroke: surf, 'stroke-width': 2, opacity: 0 }),
+      svgEl('circle', { r: 4, fill: cBud,   stroke: surf, 'stroke-width': 2, opacity: 0 })
     ];
-    focusDots.forEach(function (d) { svg.appendChild(d); });
+    dots.forEach(function (d) { svg.appendChild(d); });
 
     var band = plotW / Math.max(1, n - 1);
     D.months.forEach(function (m, i) {
       var hit = svgEl('rect', {
-        x: x(i) - band / 2, y: 0,
-        width: Math.max(24, band), height: height,
+        x: x(i) - band / 2, y: 0, width: Math.max(24, band), height: height,
         fill: 'transparent'
       });
       hit.addEventListener('pointerenter', function () { showAt(i); });
       svg.appendChild(hit);
     });
 
-    svg.addEventListener('pointerleave', hide);
+    svg.addEventListener('pointerleave', hideChart);
 
-    geom = { x: x, y: y, crosshair: crosshair, dots: focusDots, width: width, height: height };
+    geom = { x: x, y: y, crosshair: crosshair, dots: dots, width: width, height: height };
     host.insertBefore(svg, tooltip);
-
     if (hoverIx >= 0) showAt(hoverIx);
   }
 
   function showAt(i) {
     if (!geom) return;
     hoverIx = i;
-    var m = D.months[i];
-    var s = cumSpent[i], b = cumBudget[i];
+    var m = D.months[i], s = cumSpent[i], b = cumBudget[i];
 
     geom.crosshair.setAttribute('x1', geom.x(i));
     geom.crosshair.setAttribute('x2', geom.x(i));
@@ -452,11 +520,10 @@
     geom.dots[1].setAttribute('opacity', 1);
 
     var rows =
-      '<div class="tooltip-row">' +
-        '<span class="k" style="background:var(--series-spent)"></span>Spent' +
-        '<span class="n">' + (s === null ? '—' : esc(fmt(s))) + '</span></div>' +
-      '<div class="tooltip-row">' +
-        '<span class="k" style="background:var(--series-budget)"></span>Budget' +
+      '<div class="tooltip-row"><span class="k" style="background:var(--spend)"></span>' +
+        'Spent to date<span class="n">' + (s === null ? 'not entered' : esc(fmt(s))) + '</span></div>' +
+      '<div class="tooltip-row"><span class="k" style="background:var(--cat-digital)"></span>' +
+        (meta.budgetIsPhased ? 'Budget to date' : 'Even spread') +
         '<span class="n">' + esc(fmt(b)) + '</span></div>';
 
     if (s !== null) {
@@ -466,12 +533,12 @@
 
     tooltip.innerHTML =
       '<div class="tooltip-title">' + esc(m.name) +
-        (m.partial ? ' <span style="font-weight:400;color:var(--text-muted)">· part month</span>' : '') +
+        (m.key === D.partialMonth
+          ? ' <span style="font-weight:400;color:var(--text-muted)">· part month</span>' : '') +
       '</div>' + rows;
 
     tooltip.classList.add('is-on');
 
-    // Keep the tooltip inside the card.
     var tw = tooltip.offsetWidth, th = tooltip.offsetHeight;
     var left = geom.x(i) + 14;
     if (left + tw > geom.width) left = geom.x(i) - tw - 14;
@@ -479,7 +546,7 @@
     tooltip.style.top  = Math.max(0, Math.min(geom.y(b) - th / 2, geom.height - th)) + 'px';
   }
 
-  function hide() {
+  function hideChart() {
     hoverIx = -1;
     if (!geom) return;
     tooltip.classList.remove('is-on');
@@ -487,92 +554,119 @@
     geom.dots.forEach(function (d) { d.setAttribute('opacity', 0); });
   }
 
-  // Keyboard parity with hover.
   host.tabIndex = 0;
-  host.setAttribute('aria-label', 'Pacing chart. Use the left and right arrow keys to step through the ' + meta.periodUnit + '.');
+  host.setAttribute('aria-label',
+    'Running total chart. Use the left and right arrow keys to step through the months.');
   host.addEventListener('keydown', function (e) {
     if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
     e.preventDefault();
-    var next = hoverIx < 0
-      ? 0
-      : hoverIx + (e.key === 'ArrowRight' ? 1 : -1);
+    var next = hoverIx < 0 ? 0 : hoverIx + (e.key === 'ArrowRight' ? 1 : -1);
     showAt(Math.max(0, Math.min(next, D.months.length - 1)));
   });
-  host.addEventListener('blur', hide);
+  host.addEventListener('blur', hideChart);
 
   drawChart();
-  if (window.ResizeObserver) {
-    new ResizeObserver(function () { drawChart(); }).observe(host);
-  } else {
-    window.addEventListener('resize', drawChart);
-  }
+  if (window.ResizeObserver) new ResizeObserver(drawChart).observe(host);
+  else window.addEventListener('resize', drawChart);
 
-  /* -- Tables --------------------------------------------------------------- */
+  /* -- Detail table --------------------------------------------------------- */
 
-  function buildChannelTable() {
-    var rows = sorted.map(function (c) {
-      return '<tr>' +
-        '<td>' + esc(c.name) + '</td>' +
-        '<td>' + esc(fmt(c.budget)) + '</td>' +
-        '<td>' + esc(fmt(c.spent)) + '</td>' +
-        '<td>' + (c.over ? '−' : '') + esc(fmt(Math.abs(c.remaining))) + '</td>' +
-        '<td>' + esc(pct(c.used)) + '</td>' +
-        '<td>' + (c.over ? 'Over budget' : 'Within budget') + '</td>' +
-      '</tr>';
-    }).join('');
+  el('detail-sub').textContent =
+    'All ' + D.items.length + ' lines from the workbook, in sheet order, with the ' +
+    'category each has been filed under. Each month\'s subtotal matches that ' +
+    'sheet\'s own total row.';
 
-    el('channel-table').innerHTML =
-      '<caption>Budget and spend by channel</caption>' +
-      '<thead><tr><th scope="col">Channel</th><th scope="col">Budget</th>' +
-      '<th scope="col">Spent</th><th scope="col">Remaining</th>' +
-      '<th scope="col">Used</th><th scope="col">Status</th></tr></thead>' +
-      '<tbody>' + rows + '</tbody>' +
-      '<tfoot><tr><td>Total</td><td>' + esc(fmt(totalBudget)) + '</td>' +
-      '<td>' + esc(fmt(totalSpent)) + '</td>' +
-      '<td>' + (totalLeft < 0 ? '−' : '') + esc(fmt(Math.abs(totalLeft))) + '</td>' +
-      '<td>' + esc(pct(totalUsed)) + '</td><td></td></tr></tfoot>';
-  }
+  var rowsHtml = '';
+  byMonth.forEach(function (m) {
+    rowsHtml +=
+      '<tr class="month-head"><td colspan="5">' + esc(m.name) +
+      (m.partial ? ' — part month' : '') + '</td></tr>';
 
-  function buildMonthTable() {
-    var rows = D.months.map(function (m, i) {
-      var s = m.spent === null || m.spent === undefined ? null : m.spent;
-      return '<tr>' +
-        '<td>' + esc(m.name) + (m.partial ? ' (part month)' : '') + '</td>' +
-        '<td>' + esc(fmt(m.budget)) + '</td>' +
-        '<td>' + (s === null ? '—' : esc(fmt(s))) + '</td>' +
-        '<td>' + esc(fmt(cumBudget[i])) + '</td>' +
-        '<td>' + (cumSpent[i] === null ? '—' : esc(fmt(cumSpent[i]))) + '</td>' +
-      '</tr>';
-    }).join('');
+    D.items.filter(function (x) { return x.month === m.key; }).forEach(function (x) {
+      rowsHtml +=
+        '<tr>' +
+          '<td class="col-text">' + esc(x.date) +
+            (x.note ? ' <span class="flag"><span class="dot"></span>query</span>' : '') +
+          '</td>' +
+          '<td class="col-text">' + esc(x.item) +
+            (x.desc ? '<span class="desc">' + esc(x.desc) + '</span>' : '') + '</td>' +
+          '<td class="col-text"><span class="chip"><span class="dot" style="background:' +
+            catColour(x.cat) + '"></span>' + esc(catName[x.cat]) + '</span></td>' +
+          '<td class="col-text">' + esc(x.pay) + '</td>' +
+          '<td class="num">' + esc(fmt(x.amount)) + '</td>' +
+        '</tr>';
+    });
 
-    el('month-table').innerHTML =
-      '<caption>Budget and spend by month, with running totals</caption>' +
-      '<thead><tr><th scope="col">Month</th><th scope="col">Budget</th>' +
-      '<th scope="col">Spent</th><th scope="col">Budget to date</th>' +
-      '<th scope="col">Spent to date</th></tr></thead>' +
-      '<tbody>' + rows + '</tbody>' +
-      '<tfoot><tr><td>Total</td><td>' + esc(fmt(monthBudgetTotal)) + '</td>' +
-      '<td>' + esc(fmt(monthSpentTotal)) + '</td><td></td><td></td></tr></tfoot>';
-  }
-
-  buildChannelTable();
-  buildMonthTable();
-
-  var tToggle = el('table-toggle'), tBody = el('table-body');
-  tToggle.addEventListener('click', function () {
-    var open = tBody.hidden;
-    tBody.hidden = !open;
-    tToggle.textContent = open ? 'Hide tables' : 'Show tables';
-    tToggle.setAttribute('aria-expanded', String(open));
+    rowsHtml +=
+      '<tr class="month-total"><td colspan="4" class="col-text">' +
+      esc(m.name) + ' total</td><td class="num">' + esc(fmt(m.total)) + '</td></tr>';
   });
+
+  el('detail-table').innerHTML =
+    '<caption>Marketing expenses by month, exactly as recorded in the workbook</caption>' +
+    '<thead><tr>' +
+      '<th scope="col" class="col-text">Date</th>' +
+      '<th scope="col" class="col-text">Line item</th>' +
+      '<th scope="col" class="col-text">Category</th>' +
+      '<th scope="col" class="col-text">Paid by</th>' +
+      '<th scope="col" class="num">Amount</th>' +
+    '</tr></thead><tbody>' + rowsHtml + '</tbody>' +
+    '<tfoot><tr><td colspan="4" class="col-text">Total recorded spend</td>' +
+    '<td class="num">' + esc(fmt(totalSpent)) + '</td></tr></tfoot>';
+
+  var dToggle = el('detail-toggle'), dBody = el('detail-body');
+  dToggle.addEventListener('click', function () {
+    var open = dBody.hidden;
+    dBody.hidden = !open;
+    dToggle.textContent = open ? 'Hide detail' : 'Show detail';
+    dToggle.setAttribute('aria-expanded', String(open));
+  });
+
+  /* -- Data quality --------------------------------------------------------- */
+
+  if (!queried.length) {
+    el('dq-card').hidden = true;
+  } else {
+    var grouped = {};
+    queried.forEach(function (x) {
+      var kind = /^year recorded/.test(x.note)
+        ? 'Sheet is titled 2026 but the date carries ' + x.note.replace('year recorded as ', '')
+        : 'Date sits outside the month of the sheet it is on';
+      (grouped[kind] = grouped[kind] || []).push(x);
+    });
+
+    var dqRows = Object.keys(grouped).map(function (k) {
+      var g = grouped[k];
+      var amount = g.reduce(function (t, x) { return t + x.amount; }, 0);
+      return '<tr>' +
+        '<td class="col-text">' + esc(k) + '</td>' +
+        '<td class="num">' + g.length + '</td>' +
+        '<td class="num">' + esc(fmt(amount)) + '</td>' +
+        '<td class="col-text">' + esc(g.slice(0, 3).map(function (x) {
+          return x.month + ' ' + x.date;
+        }).join(', ')) + (g.length > 3 ? ' …' : '') + '</td>' +
+      '</tr>';
+    }).join('');
+
+    el('dq-table').innerHTML =
+      '<caption>Recording problems found while reading the workbook</caption>' +
+      '<thead><tr><th scope="col" class="col-text">What is wrong</th>' +
+      '<th scope="col" class="num">Lines</th>' +
+      '<th scope="col" class="num">Value affected</th>' +
+      '<th scope="col" class="col-text">Examples</th></tr></thead>' +
+      '<tbody>' + dqRows + '</tbody>';
+  }
 
   /* -- Footnote and theme --------------------------------------------------- */
 
   el('footnote').textContent =
-    'Percentages are spend divided by the budget for the same line. ' +
-    '"Against plan" compares spend to date with the budget phased across the ' +
-    meta.periodUnit + ' — ' + fmt(expectedSpend) + ' by ' + meta.asOfLabel +
-    ' — not with a flat run rate, so a seasonal budget is not misread as an overspend.';
+    'Source: "Marketing Expences August 2nd Week.xlsx", sheets Apr 26 to Aug 26. ' +
+    'Each month\'s lines were checked against that sheet\'s own total row and all ' +
+    'five agree, giving ' + fmt(totalSpent) + ' of recorded spend. The ' +
+    fmt(totalBudget) + ' budget was supplied separately. Percentages are spend ' +
+    'divided by the total budget; category bars are drawn as a share of ' +
+    'recorded spend, so each bar\'s length is the percentage printed beside it. ' +
+    'Amounts are shown to the nearest ' + meta.currency + '.';
 
   var toggle = el('theme-toggle');
 
@@ -594,10 +688,7 @@
   });
 
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function () {
-    if (!document.documentElement.getAttribute('data-theme')) {
-      syncToggle();
-      drawChart();
-    }
+    if (!document.documentElement.getAttribute('data-theme')) { syncToggle(); drawChart(); }
   });
 
   syncToggle();

@@ -17,25 +17,17 @@
         <span class="as-of"> · figures as at <span id="as-of-label"></span></span>
       </p>
     </div>
-    <button class="theme-toggle" id="theme-toggle" type="button">Dark mode</button>
+    <button class="btn" id="theme-toggle" type="button">Dark mode</button>
   </header>
 
-  <!-- Shown only while the data file is flagged as placeholder -->
-  <div class="notice" id="placeholder-notice" hidden>
+  <div class="notice" id="budget-notice">
     <span class="notice-icon" aria-hidden="true">⚠</span>
-    <div>
-      <strong>Placeholder figures.</strong>
-      Every number on this page is made up so the dashboard has something to
-      draw. Replace the values in <code>data.js</code> with your real budget
-      and spend, then set <code>isPlaceholder: false</code> to clear this
-      banner.
-    </div>
+    <div id="budget-notice-text"></div>
   </div>
 
-  <!-- Shown only when the monthly figures do not reconcile to the channels -->
-  <div class="notice" id="reconcile-notice" hidden>
+  <div class="notice" id="date-notice" hidden>
     <span class="notice-icon" aria-hidden="true">⚠</span>
-    <div id="reconcile-text"></div>
+    <div id="date-notice-text"></div>
   </div>
 
   <!-- Headline ------------------------------------------------------------->
@@ -46,7 +38,7 @@
     <p class="hero-sub" id="hero-sub"></p>
     <p class="hero-verdict" id="hero-verdict"></p>
 
-    <div class="meter meter-lg" id="overall-meter">
+    <div class="meter" id="overall-meter">
       <div class="meter-fill" id="overall-fill"></div>
       <div class="meter-gap" id="overall-gap"></div>
       <div class="meter-pace" id="overall-pace"></div>
@@ -60,55 +52,68 @@
   <!-- KPI row -------------------------------------------------------------->
   <section class="kpi-row" id="kpi-row" aria-label="Headline figures"></section>
 
-  <!-- Channel breakdown ---------------------------------------------------->
-  <section class="card" aria-labelledby="channels-h">
+  <!-- Spend by category ---------------------------------------------------->
+  <section class="card" aria-labelledby="cat-h">
     <div class="card-head">
-      <h2 id="channels-h">Where the budget has gone</h2>
-      <p id="channels-sub">Each bar is one channel's own budget. The filled part
-         is spent, the remainder is what is left to commit.</p>
+      <h2 id="cat-h">Where the money went</h2>
+      <p id="cat-sub"></p>
     </div>
-    <div class="legend">
-      <span class="legend-item"><span class="legend-key swatch" style="background:var(--series-spent)"></span>Spent</span>
-      <span class="legend-item"><span class="legend-key swatch" style="background:var(--track)"></span>Remaining</span>
-      <span class="legend-item"><span class="legend-key swatch" style="background:var(--status-critical)"></span>Over budget</span>
-    </div>
-    <div class="channel-grid" id="channel-grid"></div>
+    <div class="bars" id="cat-bars"></div>
   </section>
 
-  <!-- Pacing chart --------------------------------------------------------->
-  <section class="card" aria-labelledby="pacing-h">
+  <!-- Spend by month ------------------------------------------------------->
+  <section class="card" aria-labelledby="month-h">
     <div class="card-head">
-      <h2 id="pacing-h">Pacing through the year</h2>
-      <p>Cumulative spend against cumulative budget. Where the spend line sits
-         above the budget line, you are running ahead of plan.</p>
+      <h2 id="month-h">Month by month</h2>
+      <p>Each bar is one month's total spend, split by category and drawn on a
+         shared scale, so the months are directly comparable.</p>
     </div>
-    <div class="legend">
-      <span class="legend-item"><span class="legend-key" style="background:var(--series-spent)"></span>Cumulative spent</span>
-      <span class="legend-item"><span class="legend-key" style="background:var(--series-budget)"></span>Cumulative budget</span>
+    <div class="legend" id="month-legend"></div>
+    <div class="bars" id="month-bars"></div>
+  </section>
+
+  <!-- Pacing --------------------------------------------------------------- -->
+  <section class="card" aria-labelledby="pace-h">
+    <div class="card-head">
+      <h2 id="pace-h">Running total against the budget</h2>
+      <p id="pace-sub"></p>
     </div>
-    <div class="chart-host" id="pacing-host">
-      <div class="tooltip" id="pacing-tooltip" role="status" aria-live="polite"></div>
+    <div class="legend" id="pace-legend"></div>
+    <div class="chart-host" id="pace-host">
+      <div class="tooltip" id="pace-tooltip" role="status" aria-live="polite"></div>
     </div>
   </section>
 
-  <!-- Table view ----------------------------------------------------------->
-  <section class="card" aria-labelledby="table-h">
+  <!-- Detail --------------------------------------------------------------- -->
+  <section class="card" aria-labelledby="detail-h">
     <div class="card-head">
-      <h2 id="table-h">All figures</h2>
-      <p>The same numbers as above, in full. Nothing on this page is only
-         reachable by hovering a chart.</p>
+      <h2 id="detail-h">Every line item</h2>
+      <p id="detail-sub"></p>
     </div>
-    <button class="table-toggle" id="table-toggle" type="button"
-            aria-expanded="true" aria-controls="table-body">Hide tables</button>
-    <div id="table-body">
-      <div class="table-scroll"><table id="channel-table"></table></div>
-      <div class="table-scroll" style="margin-top:32px"><table id="month-table"></table></div>
+    <button class="btn" id="detail-toggle" type="button"
+            aria-expanded="true" aria-controls="detail-body"
+            style="margin-bottom:16px">Hide detail</button>
+    <div id="detail-body">
+      <div class="table-scroll"><table id="detail-table"></table></div>
     </div>
+  </section>
+
+  <!-- Data quality --------------------------------------------------------- -->
+  <section class="card" aria-labelledby="dq-h" id="dq-card">
+    <div class="card-head">
+      <h2 id="dq-h">Worth fixing in the workbook</h2>
+      <p>None of these change any total on this page — the amounts all tie back
+         to the sheet totals. They are recording problems that will make the
+         file hard to trust later.</p>
+    </div>
+    <div class="table-scroll"><table id="dq-table"></table></div>
   </section>
 
   <p class="footnote" id="footnote"></p>
 
 </div>
+
+<div class="tooltip" id="bar-tooltip" role="status" aria-live="polite"></div>
 
 <script src="data.js"></script>
 <script src="app.js"></script>
